@@ -635,7 +635,7 @@
                 </div>
 
                 <div class="muted-note" style="margin-bottom: 0.75rem;">
-                    Progresso salvo automaticamente neste navegador. Para continuar depois, abra esta mesma página e clique em Iniciar.
+                    Progresso salvo automaticamente neste navegador. Ao abrir esta mesma página, a conferência retoma sozinha.
                 </div>
 
                 <div class="map-container column-mode" id="mapContainer"></div>
@@ -668,8 +668,6 @@
                    autocomplete="off">
 
             <div class="button-group">
-                <button id="btnStart" class="btn btn-primary" disabled>▶ Iniciar</button>
-                <button id="btnPause" class="btn btn-light" disabled>⏸ Pausar</button>
                 <button id="btnSkip" class="btn btn-warning" disabled>⏭️ Pular</button>
                 <button id="btnReset" class="btn btn-danger">🔄 Resetar Conferência</button>
             </div>
@@ -710,7 +708,7 @@
                 this.sequenceByCell = new Map();
                 this.sequenceByBarcode = new Map();
                 this.currentIndex = 0;
-                this.isActive = false;
+                this.isActive = this.sequence.length > 0;
                 this.errorCount = 0;
                 this.checkedCells = new Set();
                 this.totalRows = 0;
@@ -785,8 +783,6 @@
                     this.selectSequenceIndex(Number(cell.dataset.sequenceIndex), true);
                 });
 
-                document.getElementById('btnStart').addEventListener('click', () => this.start());
-                document.getElementById('btnPause').addEventListener('click', () => this.pause());
                 document.getElementById('btnSkip').addEventListener('click', () => this.skip());
                 document.getElementById('btnReset').addEventListener('click', () => this.reset());
                 document.getElementById('btnCurrentColumn').addEventListener('click', () => this.setViewMode('column'));
@@ -794,8 +790,14 @@
                 document.getElementById('btnResetMap').addEventListener('click', () => this.resetMap());
                 document.getElementById('btnGoToParcel').addEventListener('click', () => this.goToParcel(this.startParcelInput.value.trim()));
                 document.getElementById('btnCloseError').addEventListener('click', () => {
-                    this.errorModal.classList.remove('active');
-                    if (this.isActive) this.barcodeInput.focus();
+                    this.closeErrorModal();
+                });
+
+                document.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' && this.errorModal.classList.contains('active')) {
+                        e.preventDefault();
+                        this.closeErrorModal();
+                    }
                 });
 
                 document.addEventListener('click', (e) => {
@@ -836,7 +838,7 @@
                         }
 
                         this.currentIndex = 0;
-                        this.isActive = false;
+                        this.isActive = true;
                         this.errorCount = 0;
                         this.checkedCells.clear();
                         this.viewMode = 'column';
@@ -1136,8 +1138,6 @@
                 this.barcodeInput.disabled = true;
                 this.barcodeInput.placeholder = 'Faça upload do mapa primeiro';
 
-                document.getElementById('btnStart').disabled = true;
-                document.getElementById('btnPause').disabled = true;
                 document.getElementById('btnSkip').disabled = true;
 
                 localStorage.removeItem(this.storageKey);
@@ -1147,51 +1147,18 @@
             }
 
             enableControls() {
-                document.getElementById('btnStart').disabled = this.sequence.length === 0;
-                document.getElementById('btnPause').disabled = !this.isActive;
+                this.isActive = this.sequence.length > 0;
                 document.getElementById('btnSkip').disabled = this.sequence.length === 0;
-                this.barcodeInput.disabled = false;
-                this.barcodeInput.placeholder = 'Mapa carregado. Clique em Iniciar';
-            }
-
-            start() {
-                if (!this.sequence.length) return;
-
-                this.isActive = true;
-                this.errorModal.classList.remove('active');
-
-                this.updateDisplay();
-                this.updateStats();
-                this.renderMap();
-
-                this.barcodeInput.disabled = false;
-                this.barcodeInput.focus();
-
-                this.statusLabel.textContent = 'CONFERINDO';
-                this.conferenceStatus.style.background = '#263746';
-                this.conferenceStatus.classList.remove('error', 'success');
-                document.getElementById('btnPause').disabled = false;
-                document.getElementById('btnStart').textContent = '▶ Continuar';
-
-                this.addLog('🚀 Conferência iniciada/retomada!', 'log-info');
-                this.saveState();
-            }
-
-            pause() {
-                if (!this.sequence.length) return;
-
-                this.isActive = false;
-                this.statusLabel.textContent = 'PAUSADO';
-                this.barcodeInput.disabled = true;
-                this.barcodeInput.placeholder = 'Conferência pausada. Clique em Continuar';
-                document.getElementById('btnPause').disabled = true;
-                document.getElementById('btnStart').disabled = false;
-                document.getElementById('btnStart').textContent = '▶ Continuar';
-                this.addLog('⏸ Conferência pausada. Progresso salvo.', 'log-info');
-                this.saveState();
+                this.barcodeInput.disabled = this.sequence.length === 0;
+                this.barcodeInput.placeholder = this.sequence.length ? 'Escaneie o código de barras...' : 'Faça upload do mapa primeiro';
+                this.statusLabel.textContent = this.sequence.length ? 'CONFERINDO' : 'AGUARDANDO MAPA';
+                if (this.sequence.length) {
+                    setTimeout(() => this.barcodeInput.focus(), 0);
+                }
             }
 
             processBarcode(scanned) {
+                if (this.errorModal.classList.contains('active')) return;
                 if (!this.isActive || this.currentIndex >= this.sequence.length) return;
                 if (!scanned) return;
 
@@ -1268,6 +1235,18 @@
 
                 this.updateStats();
                 this.saveState();
+            }
+
+            closeErrorModal() {
+                this.errorModal.classList.remove('active');
+                this.barcodeInput.value = '';
+
+                if (this.currentIndex < this.sequence.length) {
+                    this.isActive = true;
+                    this.statusLabel.textContent = 'CONFERINDO';
+                    this.barcodeInput.disabled = false;
+                    this.barcodeInput.focus();
+                }
             }
 
             updateDisplay() {
@@ -1352,8 +1331,6 @@
                 this.barcodeInput.disabled = true;
                 this.barcodeInput.placeholder = '✅ Conferência concluída!';
 
-                document.getElementById('btnStart').disabled = true;
-                document.getElementById('btnPause').disabled = true;
                 document.getElementById('btnSkip').disabled = true;
 
                 this.addLog('🎉 CONFERÊNCIA CONCLUÍDA!', 'log-success');
@@ -1376,23 +1353,21 @@
                 if (this.isActive && fromClick && !confirm('Mudar a parcela atual durante a conferência? O progresso já conferido será mantido.')) return;
 
                 this.currentIndex = index;
-                this.isActive = false;
-                this.statusLabel.textContent = 'PRONTO PARA RETOMAR';
+                this.isActive = true;
+                this.statusLabel.textContent = 'CONFERINDO';
                 this.conferenceStatus.style.background = '#263746';
                 this.conferenceStatus.classList.remove('error', 'success');
-                this.barcodeInput.disabled = true;
+                this.barcodeInput.disabled = false;
                 this.barcodeInput.value = '';
-                this.barcodeInput.placeholder = 'Parcela selecionada. Clique em Continuar';
+                this.barcodeInput.placeholder = 'Escaneie o código de barras...';
 
-                document.getElementById('btnStart').disabled = false;
-                document.getElementById('btnStart').textContent = '▶ Continuar';
-                document.getElementById('btnPause').disabled = true;
                 document.getElementById('btnSkip').disabled = false;
 
                 this.updateDisplay();
                 this.updateStats();
                 this.renderMap();
                 this.addLog(`📍 Parcela selecionada: ${this.itemLabel(this.sequence[index])} (${this.sequence[index].location})`, 'log-info');
+                this.barcodeInput.focus();
                 this.saveState();
             }
 
@@ -1457,18 +1432,15 @@
                 this.progressFill.style.width = '0%';
                 this.progressText.textContent = this.sequence.length ? `0 / ${this.sequence.length}` : '0 / 0';
 
-                this.statusLabel.textContent = this.sequence.length ? 'AGUARDANDO' : 'AGUARDANDO MAPA';
+                this.statusLabel.textContent = this.sequence.length ? 'CONFERINDO' : 'AGUARDANDO MAPA';
                 this.conferenceStatus.style.background = '#263746';
                 this.conferenceStatus.classList.remove('error', 'success');
                 this.barcodeInput.classList.remove('error');
 
                 this.barcodeInput.value = '';
                 this.barcodeInput.disabled = !this.sequence.length;
-                this.barcodeInput.placeholder = this.sequence.length ? 'Mapa carregado. Clique em Iniciar' : 'Faça upload do mapa primeiro';
+                this.barcodeInput.placeholder = this.sequence.length ? 'Escaneie o código de barras...' : 'Faça upload do mapa primeiro';
 
-                document.getElementById('btnStart').disabled = !this.sequence.length;
-                document.getElementById('btnStart').textContent = '▶ Iniciar';
-                document.getElementById('btnPause').disabled = true;
                 document.getElementById('btnSkip').disabled = !this.sequence.length;
 
                 this.updateStats();
@@ -1477,6 +1449,7 @@
                 if (this.mapData) {
                     this.updateDisplay();
                     this.renderMap();
+                    this.barcodeInput.focus();
                 }
 
                 this.addLog('🔄 Conferência resetada', 'log-info');
@@ -1514,7 +1487,7 @@
                     this.errorCount = Number(state.errorCount) || 0;
                     this.checkedCells = new Set(state.checkedCells || []);
                     this.viewMode = state.viewMode === 'full' ? 'full' : 'column';
-                    this.isActive = false;
+                    this.isActive = this.sequence.length > 0;
 
                     this.buildSequence();
                     this.updateFileInfo();
@@ -1523,11 +1496,10 @@
                     this.updateDisplay();
                     this.updateStats();
                     this.renderMap();
-                    this.statusLabel.textContent = 'PRONTO PARA RETOMAR';
-                    this.barcodeInput.disabled = true;
-                    this.barcodeInput.placeholder = 'Progresso restaurado. Clique em Continuar';
-                    document.getElementById('btnStart').textContent = '▶ Continuar';
-                    document.getElementById('btnPause').disabled = true;
+                    this.statusLabel.textContent = 'CONFERINDO';
+                    this.barcodeInput.disabled = this.sequence.length === 0;
+                    this.barcodeInput.placeholder = 'Escaneie o código de barras...';
+                    this.barcodeInput.focus();
                     this.addLog('💾 Progresso restaurado automaticamente.', 'log-success');
                 } catch (error) {
                     localStorage.removeItem(this.storageKey);
