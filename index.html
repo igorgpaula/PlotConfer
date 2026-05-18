@@ -287,6 +287,15 @@
             overflow-wrap: anywhere;
         }
 
+        .package-barcode {
+            font-size: 0.72rem;
+            line-height: 1.3;
+            margin: -0.25rem auto 0.6rem;
+            max-width: 95%;
+            opacity: 0.68;
+            overflow-wrap: anywhere;
+        }
+
         .location-text {
             font-size: 1.1rem;
             opacity: 0.92;
@@ -639,6 +648,7 @@
             <div id="conferenceStatus" class="conference-status">
                 <div style="font-size: 0.9rem; opacity: 0.9;" id="statusLabel">AGUARDANDO MAPA</div>
                 <div class="package-number" id="currentPackage">----</div>
+                <div class="package-barcode" id="currentBarcode"></div>
                 <div class="location-text" id="currentLocation"></div>
                 <div class="direction-arrow" id="directionArrow"></div>
 
@@ -695,6 +705,7 @@
             constructor() {
                 this.storageKey = 'fieldConference.v2';
                 this.mapData = null;
+                this.barcodeByCell = new Map();
                 this.sequence = [];
                 this.sequenceByCell = new Map();
                 this.sequenceByBarcode = new Map();
@@ -706,6 +717,7 @@
                 this.totalCols = 0;
                 this.viewMode = 'column';
                 this.fileName = '';
+                this.dataFormat = 'grid';
 
                 this.init();
             }
@@ -715,6 +727,7 @@
                 this.fileInput = document.getElementById('fileInput');
                 this.barcodeInput = document.getElementById('barcodeInput');
                 this.currentPackage = document.getElementById('currentPackage');
+                this.currentBarcode = document.getElementById('currentBarcode');
                 this.currentLocation = document.getElementById('currentLocation');
                 this.directionArrow = document.getElementById('directionArrow');
                 this.conferenceStatus = document.getElementById('conferenceStatus');
@@ -808,10 +821,15 @@
                         const workbook = XLSX.read(data, { type: 'array' });
                         const sheet = workbook.Sheets[workbook.SheetNames[0]];
 
-                        this.mapData = XLSX.utils.sheet_to_json(sheet, {
+                        const rawRows = XLSX.utils.sheet_to_json(sheet, {
                             header: 1,
                             defval: ''
                         });
+
+                        const prepared = this.prepareSheetData(rawRows);
+                        this.mapData = prepared.mapData;
+                        this.barcodeByCell = prepared.barcodeByCell;
+                        this.dataFormat = prepared.format;
 
                         if (!this.mapData || this.mapData.length <= 1) {
                             throw new Error('A planilha precisa ter cabeçalho e ao menos uma linha de dados.');
@@ -832,6 +850,9 @@
                         this.updateStats();
                         this.clearLogs();
                         this.addLog('✅ Mapa carregado! ' + this.sequence.length + ' parcelas', 'log-success');
+                        if (this.dataFormat === 'raw') {
+                            this.addLog('Arquivo raw convertido por UUID, Plot name, Row e Column', 'log-info');
+                        }
                         this.saveState();
                     } catch (error) {
                         alert('Erro ao ler arquivo: ' + error.message);
@@ -840,6 +861,105 @@
                 };
 
                 reader.readAsArrayBuffer(file);
+            }
+
+            prepareSheetData(rows) {
+                if (this.isRawUuidFormat(rows)) {
+                    return this.transformRawRows(rows);
+                }
+
+                return {
+                    mapData: rows,
+                    barcodeByCell: new Map(),
+                    format: 'grid'
+                };
+            }
+
+            isRawUuidFormat(rows) {
+                if (!rows || !rows[0]) return false;
+                const headers = rows[0].map(header => this.normalizeHeader(header));
+                return ['uuid', 'plotname', 'row', 'column'].every(required => headers.includes(required));
+            }
+
+            transformRawRows(rows) {
+                const headers = rows[0].map(header => this.normalizeHeader(header));
+                const uuidIndex = headers.indexOf('uuid');
+                const plotIndex = headers.indexOf('plotname');
+                const rowIndex = headers.indexOf('row');
+                const colIndex = headers.indexOf('column');
+
+                const records = rows.slice(1)
+                    .map(row => ({
+                        uuid: this.cleanCell(row[uuidIndex]),
+                        plotName: this.cleanCell(row[plotIndex]),
+                        row: this.cleanCell(row[rowIndex]),
+                        column: this.cleanCell(row[colIndex])
+                    }))
+                    .filter(record => record.row && record.column && (record.uuid || record.plotName));
+
+                const rowLabels = this.uniqueSortedDesc(records.map(record => record.row));
+                const colLabels = this.uniqueSortedAsc(records.map(record => record.column));
+                const rowPosition = new Map(rowLabels.map((label, index) => [label, index + 1]));
+                const colPosition = new Map(colLabels.map((label, index) => [label, index + 1]));
+                const mapData = [['ROW/COLUMN', ...colLabels]];
+                const barcodeByCell = new Map();
+
+                for (const rowLabel of rowLabels) {
+                    mapData.push([rowLabel, ...Array(colLabels.length).fill('')]);
+                }
+
+                for (const record of records) {
+                    const mapRow = rowPosition.get(record.row);
+                    const mapCol = colPosition.get(record.column);
+                    const displayName = record.plotName || record.uuid;
+
+                    mapData[mapRow][mapCol] = displayName;
+                    if (record.uuid) {
+                        barcodeByCell.set(this.cellId(mapRow, mapCol), record.uuid);
+                    }
+                }
+
+                return {
+                    mapData,
+                    barcodeByCell,
+                    format: 'raw'
+                };
+            }
+
+            normalizeHeader(value) {
+                return this.cleanCell(value).toLowerCase().replace(/[^a-z0-9]/g, '');
+            }
+
+            cleanCell(value) {
+                return value === undefined || value === null ? '' : value.toString().trim();
+            }
+
+            uniqueSortedDesc(values) {
+                const unique = Array.from(new Set(values.filter(value => value !== '')));
+                return unique.sort((a, b) => this.compareDesc(a, b));
+            }
+
+            uniqueSortedAsc(values) {
+                const unique = Array.from(new Set(values.filter(value => value !== '')));
+                return unique.sort((a, b) => this.compareAsc(a, b));
+            }
+
+            compareAsc(a, b) {
+                const numA = Number(a);
+                const numB = Number(b);
+                const bothNumeric = !Number.isNaN(numA) && !Number.isNaN(numB);
+
+                if (bothNumeric) return numA - numB;
+                return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+            }
+
+            compareDesc(a, b) {
+                const numA = Number(a);
+                const numB = Number(b);
+                const bothNumeric = !Number.isNaN(numA) && !Number.isNaN(numB);
+
+                if (bothNumeric) return numB - numA;
+                return b.localeCompare(a, undefined, { numeric: true, sensitivity: 'base' });
             }
 
             buildSequence() {
@@ -858,8 +978,11 @@
                             const mapRow = row + 1;
                             const lineNumber = this.rowLabel(mapRow);
                             const columnName = this.columnLabel(col);
+                            const displayName = value.toString().trim();
+                            const barcode = this.barcodeForCell(mapRow, col, displayName);
                             const item = {
-                                barcode: value.toString().trim(),
+                                barcode: barcode,
+                                displayName: displayName,
                                 row: mapRow,
                                 col: col,
                                 line: lineNumber,
@@ -872,12 +995,15 @@
                             if (!this.sequenceByBarcode.has(item.barcode)) {
                                 this.sequenceByBarcode.set(item.barcode, item.index);
                             }
+                            if (!this.sequenceByBarcode.has(item.displayName)) {
+                                this.sequenceByBarcode.set(item.displayName, item.index);
+                            }
                         }
                     }
                 }
 
                 this.addLog(`📊 Ordem: ${this.totalCols} colunas × ${this.totalRows} linhas`, 'log-info');
-                this.addLog(`🔍 Primeiro: ${this.sequence[0]?.barcode || '-'} | Último: ${this.sequence[this.sequence.length - 1]?.barcode || '-'}`, 'log-info');
+                this.addLog(`🔍 Primeiro: ${this.sequence[0] ? this.itemLabel(this.sequence[0]) : '-'} | Último: ${this.sequence.length ? this.itemLabel(this.sequence[this.sequence.length - 1]) : '-'}`, 'log-info');
             }
 
             renderMap() {
@@ -977,6 +1103,7 @@
                 if (!confirm('Tem certeza que deseja carregar um novo mapa? Isso resetará a conferência atual.')) return;
 
                 this.mapData = null;
+                this.barcodeByCell.clear();
                 this.sequence = [];
                 this.sequenceByCell.clear();
                 this.sequenceByBarcode.clear();
@@ -986,6 +1113,7 @@
                 this.checkedCells.clear();
                 this.viewMode = 'column';
                 this.fileName = '';
+                this.dataFormat = 'grid';
 
                 this.mapSection.classList.add('hidden');
                 this.mapContainer.innerHTML = '';
@@ -994,6 +1122,7 @@
                 this.updateFileInfo();
 
                 this.currentPackage.textContent = '----';
+                this.currentBarcode.textContent = '';
                 this.currentLocation.textContent = '';
                 this.directionArrow.textContent = '';
                 this.progressFill.style.width = '0%';
@@ -1082,7 +1211,7 @@
                 const id = this.cellId(item.row, item.col);
                 this.checkedCells.add(id);
 
-                this.addLog(`✅ ${item.barcode} - ${item.location}`, 'log-success');
+                this.addLog(`✅ ${this.itemLabel(item)} - ${item.location}`, 'log-success');
                 this.currentIndex++;
 
                 if (this.currentIndex >= this.sequence.length) {
@@ -1116,8 +1245,8 @@
                 setTimeout(() => this.flashOverlay.classList.add('hidden'), 500);
 
                 document.getElementById('errorLocation').textContent = `📍 ${expected.location}`;
-                document.getElementById('errorExpected').textContent = expected.barcode;
-                document.getElementById('errorScanned').textContent = scanned || '(vazio)';
+                document.getElementById('errorExpected').textContent = this.itemLabel(expected);
+                document.getElementById('errorScanned').textContent = this.labelForScannedCode(scanned);
                 this.errorModal.classList.add('active');
 
                 const id = this.cellId(expected.row, expected.col);
@@ -1130,7 +1259,7 @@
                 this.barcodeInput.classList.add('error');
                 this.conferenceStatus.classList.add('error');
 
-                this.addLog(`❌ ERRO! Lido: ${scanned || '(vazio)'} | Esperado: ${expected.barcode} (${expected.location})`, 'log-error');
+                this.addLog(`❌ ERRO! Lido: ${this.labelForScannedCode(scanned)} | Esperado: ${this.itemLabel(expected)} (${expected.location})`, 'log-error');
 
                 setTimeout(() => {
                     this.barcodeInput.classList.remove('error');
@@ -1150,13 +1279,14 @@
                 }
 
                 const curr = this.sequence[this.currentIndex];
-                this.currentPackage.textContent = curr.barcode;
+                this.currentPackage.textContent = this.itemLabel(curr);
+                this.currentBarcode.textContent = this.itemBarcodeLabel(curr);
                 this.currentLocation.textContent = `📍 ${curr.location}`;
-                this.startParcelInput.value = curr.barcode;
+                this.startParcelInput.value = this.itemLabel(curr);
 
                 if (this.currentIndex > 0) {
                     const prev = this.sequence[this.currentIndex - 1];
-                    this.directionArrow.textContent = curr.col !== prev.col ? `⬆️ Nova coluna: ${curr.col}` : '⬆️ Subindo na coluna';
+                    this.directionArrow.textContent = curr.col !== prev.col ? `⬆️ Nova coluna: ${this.columnLabel(curr.col)}` : '⬆️ Subindo na coluna';
                 } else {
                     this.directionArrow.textContent = '⬆️ Início da coluna';
                 }
@@ -1164,7 +1294,7 @@
                 const progress = (this.currentIndex / this.sequence.length) * 100;
                 this.progressFill.style.width = progress + '%';
                 this.progressText.textContent = `${this.currentIndex} / ${this.sequence.length}`;
-                this.barcodeInput.placeholder = `Escaneie: ${curr.barcode}`;
+                this.barcodeInput.placeholder = `Escaneie o barcode de: ${this.itemLabel(curr)}`;
             }
 
             highlightCell() {
@@ -1187,7 +1317,7 @@
                 const id = this.cellId(skipped.row, skipped.col);
                 this.checkedCells.add(id);
 
-                this.addLog(`⏭️ Pulado: ${skipped.barcode} (${skipped.location})`, 'log-info');
+                this.addLog(`⏭️ Pulado: ${this.itemLabel(skipped)} (${skipped.location})`, 'log-info');
                 this.currentIndex++;
 
                 if (this.currentIndex >= this.sequence.length) {
@@ -1209,6 +1339,7 @@
                 this.isActive = false;
 
                 this.currentPackage.textContent = '✓✓✓';
+                this.currentBarcode.textContent = '';
                 this.currentLocation.textContent = '🎉 Conferência Finalizada!';
                 this.directionArrow.textContent = '';
                 this.progressFill.style.width = '100%';
@@ -1261,7 +1392,7 @@
                 this.updateDisplay();
                 this.updateStats();
                 this.renderMap();
-                this.addLog(`📍 Parcela selecionada: ${this.sequence[index].barcode} (${this.sequence[index].location})`, 'log-info');
+                this.addLog(`📍 Parcela selecionada: ${this.itemLabel(this.sequence[index])} (${this.sequence[index].location})`, 'log-info');
                 this.saveState();
             }
 
@@ -1320,6 +1451,7 @@
                 this.checkedCells.clear();
 
                 this.currentPackage.textContent = '----';
+                this.currentBarcode.textContent = '';
                 this.currentLocation.textContent = '';
                 this.directionArrow.textContent = '';
                 this.progressFill.style.width = '0%';
@@ -1355,7 +1487,9 @@
                 if (!this.mapData) return;
                 const state = {
                     fileName: this.fileName,
+                    dataFormat: this.dataFormat,
                     mapData: this.mapData,
+                    barcodeByCell: Array.from(this.barcodeByCell.entries()),
                     currentIndex: this.currentIndex,
                     errorCount: this.errorCount,
                     checkedCells: Array.from(this.checkedCells),
@@ -1373,6 +1507,8 @@
                     if (!state.mapData || !Array.isArray(state.mapData)) return;
 
                     this.mapData = state.mapData;
+                    this.barcodeByCell = new Map(state.barcodeByCell || []);
+                    this.dataFormat = state.dataFormat || 'grid';
                     this.fileName = state.fileName || 'Mapa restaurado do navegador';
                     this.currentIndex = Number(state.currentIndex) || 0;
                     this.errorCount = Number(state.errorCount) || 0;
@@ -1419,6 +1555,28 @@
                 return value !== undefined && value !== null && value.toString().trim() !== ''
                     ? value.toString().trim()
                     : String(col);
+            }
+
+            barcodeForCell(row, col, fallback) {
+                return this.barcodeByCell.get(this.cellId(row, col)) || fallback;
+            }
+
+            itemLabel(item) {
+                return item.displayName || item.barcode;
+            }
+
+            itemBarcodeLabel(item) {
+                if (!item || !item.barcode || item.barcode === this.itemLabel(item)) return '';
+                return `UUID: ${item.barcode}`;
+            }
+
+            labelForScannedCode(scanned) {
+                if (!scanned) return '(vazio)';
+
+                const index = this.sequenceByBarcode.get(scanned);
+                if (index === undefined) return scanned;
+
+                return this.itemLabel(this.sequence[index]);
             }
 
             isConferableValue(value) {
